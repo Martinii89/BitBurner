@@ -1,10 +1,13 @@
 {
     // Linter Settings
-    "typescript.validate.enable": false,
+    "typescript.validate.enable": true,
     "javascript.validate.enable": false,
     "eslint.validate": ["typescript", "typescriptreact"],
     "eslint.workingDirectories": ["./src"],
     "editor.codeActionsOnSave": {"source.fixAll.eslint": true},
+    "prettier.printWidth": 160,
+    "prettier.tabWidth": 4,
+    "editor.formatOnSave": true,
 
     // Use Non-relative imports so the game can find files in its fake directory structure
     "javascript.preferences.importModuleSpecifier": "non-relative",
@@ -12,6 +15,7 @@
 
     // Bitburner Extension Settings
     "bitburner.scriptRoot": "./dist/",
+    "bitburner.authToken": "wiVVPTG9i/8TSg2ZWjWBbCy880OnCnFFctJgMcrTRkX0bqXq9YWFbaviujunB4gp",
 
     // Autosave Settings
     "files.autoSave": "off",
