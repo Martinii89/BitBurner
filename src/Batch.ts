@@ -1,5 +1,5 @@
 import { NS, Server } from "@ns";
-import { notStrictEqual } from "assert";
+import { values } from "lodash";
 import { FindAllServers } from "/utils/DfsScan";
 
 class BatchItem {
@@ -14,14 +14,68 @@ class BatchItem {
     weaken1_finish_time;
 }
 
-function FindExes(ns: NS): string[] {
-    const exes = [];
-    for (const hack of ["brutessh", "ftpcrack", "relaysmtp", "sqlinject", "httpworm"]) {
-        if (ns.fileExists(hack + ".exe")) {
-            exes.push(hack);
-        }
+class TimeSegment {
+    constructor(start: number, end: number) {
+        this.start = start;
+        this.end = end;
     }
-    return exes;
+    start;
+    end;
+
+    intersects(other: TimeSegment): boolean {
+        return !(this.end < other.start || other.end < this.start);
+    }
+}
+
+class BatchSubtaskInfo {
+    constructor(name: string, timeSegment: TimeSegment) {
+        this.name = name;
+        this.timeSegment = timeSegment;
+    }
+    name;
+    timeSegment;
+}
+
+function BatchTarget(target: Server, hosts: Server[], ns: NS): void {
+    const hackTime = ns.getHackTime(target.hostname);
+    const weakenTime = ns.getWeakenTime(target.hostname);
+    const growTime = ns.getWeakenTime(target.hostname);
+
+    const now = new Date().getTime();
+    const finishDelay = 100; //ms;
+    // Required finish time is: hack, weaken1, grow, weaken2
+    // starting order: weaken1, weaken2, grow, hack
+    const weaken1StartTime = now;
+    const weaken1FinishTime = weakenTime + weaken1StartTime;
+    const weakenTaskInfo = new BatchSubtaskInfo("weaken", new TimeSegment(weaken1StartTime, weaken1FinishTime));
+    // weaken2 is offset by 2 delays
+    const weaken2FinishTime = weaken1FinishTime + 2 * finishDelay;
+    const weaken2TaskInfo = new BatchSubtaskInfo("weaken2", new TimeSegment(weaken2FinishTime - weakenTime, weaken2FinishTime));
+    // grow is offset by 1 delay
+    const growFinishTime = weaken1FinishTime + finishDelay;
+    const growTaskInfo = new BatchSubtaskInfo("grow", new TimeSegment(growFinishTime - growTime, growFinishTime));
+    // hack is offset by 1 delay
+    const hackFinishTime = weaken1FinishTime - finishDelay;
+    const hackTaskInfo = new BatchSubtaskInfo("hack", new TimeSegment(hackFinishTime - hackTime, hackFinishTime));
+    ns.tprintf("Batch timings:");
+    const printBatchSubtaskInfo = (task: BatchSubtaskInfo) => {
+        const begin = new Date(task.timeSegment.start);
+        const end = new Date(task.timeSegment.end);
+        ns.tprintf("%s: [%s.%f -> %s.%f]", task.name, begin.toLocaleTimeString(), begin.getMilliseconds(), end.toLocaleTimeString(), end.getMilliseconds());
+    };
+
+    const pMoneyStolenPerThread = ns.hackAnalyze(target.hostname);
+    const pMoneyLeft = 1 - pMoneyStolenPerThread;
+    const growPercentRequired = 1 / pMoneyLeft;
+    const growRestorCount = ns.growthAnalyze(target.hostname, growPercentRequired);
+    const securityIncrease = 0.002 + Math.ceil(growRestorCount) * 0.004;
+    const weakenThreads = securityIncrease / 0.05;
+    ns.tprintf("Hack: %f | GrowThreads: %f | WeakenThreads: %f", pMoneyStolenPerThread, growRestorCount, weakenThreads);
+
+    printBatchSubtaskInfo(weakenTaskInfo);
+    printBatchSubtaskInfo(weaken2TaskInfo);
+    printBatchSubtaskInfo(growTaskInfo);
+    printBatchSubtaskInfo(hackTaskInfo);
 }
 
 function NukeServer(server: string, ns: NS) {
@@ -49,6 +103,19 @@ function NukeServer(server: string, ns: NS) {
     if (ns.getServerNumPortsRequired(server) <= portsOpened) {
         ns.nuke(server);
     }
+}
+
+function GetServerHackingMoneyPerTime(server: Server, ns: NS): number {
+    const maxMoney = server.moneyMax;
+    let hackTime = ns.getHackTime(server.hostname);
+    if (ns.fileExists("formulas.exe")) {
+        const serverCopy = ns.getServer(server.hostname);
+        serverCopy.hackDifficulty = serverCopy.minDifficulty;
+        hackTime = ns.formulas.hacking.hackTime(serverCopy, ns.getPlayer());
+    }
+    const hackChance = ns.hackAnalyzeChance(server.hostname);
+    const moneyPerTime = (maxMoney / hackTime) * hackChance;
+    return moneyPerTime;
 }
 
 async function WeakenAll(targets: Server[], sources: Server[], ns: NS) {
@@ -118,6 +185,26 @@ export async function main(ns: NS): Promise<void> {
             return x.hasAdminRights == true;
         });
 
+        hackableServers.forEach((x) => {
+            const value = GetServerHackingMoneyPerTime(x, ns);
+            ns.tprintf(
+                "%-20sValue: %-10sSecurity: %s(min:%s) Grow: %f",
+                x.hostname,
+                ns.nFormat(value, "0.0a"),
+                x.hackDifficulty,
+                x.minDifficulty,
+                x.serverGrowth
+            );
+        });
+        const bestTarget = hackableServers.reduce((a, b) => {
+            const aValue = GetServerHackingMoneyPerTime(a, ns);
+            const bValue = GetServerHackingMoneyPerTime(b, ns);
+            return aValue > bValue ? a : b;
+        });
+        ns.tprintf("Best target: %s", bestTarget.hostname);
+        BatchTarget(hackableServers[0], sourceServers, ns);
+
+        break;
         await WeakenAll(hackableServers, sourceServers, ns);
         await ns.sleep(1000);
     }
