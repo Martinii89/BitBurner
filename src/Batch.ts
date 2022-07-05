@@ -2,18 +2,6 @@ import { NS, Server } from "@ns";
 import { values } from "lodash";
 import { FindAllServers } from "/utils/DfsScan";
 
-class BatchItem {
-    constructor(source: string, target: string, weaken1_finish_time: number) {
-        this.source = source;
-        this.target = target;
-        this.weaken1_finish_time = weaken1_finish_time;
-    }
-
-    source;
-    target;
-    weaken1_finish_time;
-}
-
 class TimeSegment {
     constructor(start: number, end: number) {
         this.start = start;
@@ -36,10 +24,36 @@ class BatchSubtaskInfo {
     timeSegment;
 }
 
-function BatchTarget(target: Server, hosts: Server[], ns: NS): void {
+class BatchTask {
+    constructor(source: string, target: string, weaken1: BatchSubtaskInfo, weaken2: BatchSubtaskInfo, hack: BatchSubtaskInfo, grow: BatchSubtaskInfo) {
+        this.source = source;
+        this.target = target;
+        this.weaken1 = weaken1;
+        this.weaken2 = weaken2;
+        this.hack = hack;
+        this.grow = grow;
+    }
+
+    source;
+    target;
+    weaken1;
+    weaken2;
+    hack;
+    grow;
+}
+
+async function BatchTarget(target: Server, host: Server, ns: NS): Promise<BatchTask> {
+    const hackScript = "/utils/hack.js";
+    const growScript = "/utils/grow.js";
+    const weaken1Script = "/utils/weaken1.js";
+    const weaken2Script = "/utils/weaken2.js";
+    await ns.scp([hackScript, growScript, weaken1Script, weaken2Script], host.hostname);
+
     const hackTime = ns.getHackTime(target.hostname);
     const weakenTime = ns.getWeakenTime(target.hostname);
-    const growTime = ns.getWeakenTime(target.hostname);
+    const growTime = ns.getGrowTime(target.hostname);
+
+    ns.tprintf("HT: %s | WT : %s | GT: %s", ns.tFormat(hackTime), ns.tFormat(weakenTime), ns.tFormat(growTime));
 
     const now = new Date().getTime();
     const finishDelay = 100; //ms;
@@ -64,18 +78,61 @@ function BatchTarget(target: Server, hosts: Server[], ns: NS): void {
         ns.tprintf("%s: [%s.%f -> %s.%f]", task.name, begin.toLocaleTimeString(), begin.getMilliseconds(), end.toLocaleTimeString(), end.getMilliseconds());
     };
 
-    const pMoneyStolenPerThread = ns.hackAnalyze(target.hostname);
+    const hackThreads = 10;
+    const pMoneyStolenPerThread = ns.hackAnalyze(target.hostname) * hackThreads;
     const pMoneyLeft = 1 - pMoneyStolenPerThread;
     const growPercentRequired = 1 / pMoneyLeft;
-    const growRestorCount = ns.growthAnalyze(target.hostname, growPercentRequired);
-    const securityIncrease = 0.002 + Math.ceil(growRestorCount) * 0.004;
-    const weakenThreads = securityIncrease / 0.05;
-    ns.tprintf("Hack: %f | GrowThreads: %f | WeakenThreads: %f", pMoneyStolenPerThread, growRestorCount, weakenThreads);
+    const growThreads = ns.growthAnalyze(target.hostname, growPercentRequired);
+    const hackSecurityIncrease = 0.002 * hackThreads;
+    const growSecurityIncrease = Math.ceil(growThreads) * 0.004;
+    const weaken1Threads = Math.ceil(hackSecurityIncrease / 0.05);
+    const weaken2Threads = Math.ceil(growSecurityIncrease / 0.05);
+    const weakenThreads = weaken1Threads + weaken2Threads;
+    const totalThreads = Math.ceil(growThreads) + Math.ceil(weakenThreads) + hackThreads;
+    const ramRequired = 1.75 * totalThreads;
+    ns.tprintf(
+        "Hack: %f | GrowThreads: %f | WeakenThreads: %f | RamRequired: %sGb",
+        pMoneyStolenPerThread,
+        growThreads,
+        weakenThreads,
+        ns.nFormat(ramRequired, "0.0a")
+    );
 
     printBatchSubtaskInfo(weakenTaskInfo);
     printBatchSubtaskInfo(weaken2TaskInfo);
     printBatchSubtaskInfo(growTaskInfo);
     printBatchSubtaskInfo(hackTaskInfo);
+
+    ns.tprint(`Executing weaken1 from ${host.hostname} against ${target.hostname} wity ${weaken1Threads} threads`);
+    if (ns.exec(weaken1Script, host.hostname, weaken1Threads, target.hostname) == 0) {
+        ns.tprint("Failed to start weaken script");
+    }
+    let timeToSleep = weaken2TaskInfo.timeSegment.start - new Date().getTime();
+    ns.tprint(`Waiting for weaken2 time ${timeToSleep}`);
+    await ns.sleep(timeToSleep);
+
+    ns.tprint(`Executing weaken2 from ${host.hostname} against ${target.hostname} wity ${weaken2Threads} threads`);
+    if (ns.exec(weaken2Script, host.hostname, weaken2Threads, target.hostname) == 0) {
+        ns.tprint("Failed to start weaken1 script");
+    }
+    timeToSleep = growTaskInfo.timeSegment.start - new Date().getTime();
+    ns.tprint(`Sleeping for ${ns.tFormat(timeToSleep)} before starting grow`);
+    await ns.sleep(timeToSleep);
+
+    ns.tprint(`Executing grow from ${host.hostname} against ${target.hostname} wity ${growThreads} threads`);
+    if (ns.exec(growScript, host.hostname, growThreads, target.hostname) == 0) {
+        ns.tprint("Failed to start grow script");
+    }
+    timeToSleep = hackTaskInfo.timeSegment.start - new Date().getTime();
+    ns.tprint(`Sleeping for ${ns.tFormat(timeToSleep)} before starting hack`);
+    await ns.sleep(timeToSleep);
+
+    ns.tprint(`Executing hack from ${host.hostname} against ${target.hostname} wity ${hackThreads} threads`);
+    if (ns.exec(hackScript, host.hostname, hackThreads, target.hostname) == 0) {
+        ns.tprint("Failed to start hack script");
+    }
+
+    return new BatchTask(host.hostname, target.hostname, weakenTaskInfo, weaken2TaskInfo, hackTaskInfo, growTaskInfo);
 }
 
 function NukeServer(server: string, ns: NS) {
@@ -196,17 +253,17 @@ export async function main(ns: NS): Promise<void> {
                 x.serverGrowth
             );
         });
-        const bestTarget = hackableServers.reduce((a, b) => {
+        let bestTarget = hackableServers.reduce((a, b) => {
             const aValue = GetServerHackingMoneyPerTime(a, ns);
             const bValue = GetServerHackingMoneyPerTime(b, ns);
             return aValue > bValue ? a : b;
         });
+        bestTarget = ns.getServer("galactic-cyber");
         ns.tprintf("Best target: %s", bestTarget.hostname);
-        BatchTarget(hackableServers[0], sourceServers, ns);
-
+        await BatchTarget(bestTarget, ns.getServer("SERVER-1.0PB"), ns);
         break;
-        await WeakenAll(hackableServers, sourceServers, ns);
-        await ns.sleep(1000);
+        //await WeakenAll(hackableServers, sourceServers, ns);
+        //await ns.sleep(1000);
     }
 
     // ns.tprintf("HackLevel: %i ", hackLevel);
