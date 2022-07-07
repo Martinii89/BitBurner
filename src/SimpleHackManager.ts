@@ -138,14 +138,15 @@ export async function main(ns: NS): Promise<void> {
         const purchasedServers = ns.getPurchasedServers();
         for (const server of ns.scan(current)) {
             if ((purchasedServers.includes(server) || info("NPR", server) <= exes.length) && host != server) {
-                if (!purchasedServers.includes(server)) {
+                if (!purchasedServers.includes(server) && !ns.hasRootAccess(server)) {
                     NukeServer(server, ns);
                 }
-                if (info("MM", server) != 0 && info("RHL", server) <= ns.getHackingLevel() && info("MSL", server) < 100) {
+                const hasRoot = ns.hasRootAccess(server);
+                if (info("MM", server) != 0 && info("RHL", server) <= ns.getHackingLevel() && info("MSL", server) < 100 && hasRoot) {
                     targets.push(new ServerInfo(GetServerHackingMoneyPerTime(server), server));
                     targets = ValueServerPairSort(targets);
                 }
-                if (info("MR", server) > 4 && !exclude.includes(server) && ns.hasRootAccess(server)) {
+                if (info("MR", server) > 4 && !exclude.includes(server) && hasRoot) {
                     hosts.push(new ServerInfo(info("MR", server), server));
                     hosts = ValueServerPairSort(hosts);
                 }

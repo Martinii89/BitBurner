@@ -1,5 +1,6 @@
 import { NS, Server } from "@ns";
 import { values } from "lodash";
+import { BatchManager } from "/Batch/BatchManager";
 import { FindAllServers } from "/utils/DfsScan";
 
 class TimeSegment {
@@ -227,6 +228,17 @@ async function RunWeaken1(target: string, host: string, threads: number, ns: NS)
 }
 
 export async function main(ns: NS): Promise<void> {
+    const batchManager = new BatchManager(ns, ns.getServer("phantasy"), ns.getServer("SERVER-2.0TB-0"), 1000);
+    await batchManager.PrepareHost();
+    while (true) {
+        if (batchManager.CanQueueNewBatch()) {
+            ns.tprint("Can queue new batch");
+            const newBatch = batchManager.GetNewBatch();
+            batchManager.QueueNewBatch(newBatch);
+        }
+
+        await ns.sleep(25);
+    }
     while (true) {
         ns.disableLog("sleep");
         const allServerPaths = await FindAllServers(ns);
